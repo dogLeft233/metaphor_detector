@@ -2,7 +2,7 @@ from torch.utils.data.dataloader import DataLoader
 from torch.optim.adam import Adam
 from model.TransformerClassifier import TransformerClassifier
 from model.BertW2V import BertW2V
-from data.VUA18.VUA18_Dataset import VUA18_Dataset, VUA18_Collator, VUA18_Collator_Embed
+from data_processing.VUA18.VUA18_Dataset import VUA18_Dataset, VUA18_Collator_Embed
 from train_eval.Trainer import Trainer
 from transformers import get_scheduler
 from transformers import BertTokenizer
