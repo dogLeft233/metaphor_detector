@@ -35,9 +35,11 @@ from torch.utils.data.dataloader import DataLoader
 from data_processing.flickr.flickr import FlickrDataset, FlickrCollator
 import torchvision.transforms as T
 from transformers import CLIPProcessor, CLIPModel
+from model.CLIPW2V import CLIPEncoder
 from torch.utils.data.dataloader import DataLoader
+from gensim.models import KeyedVectors
 
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+model = CLIPEncoder().to('cuda')
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 image_root ="./data/flickr8k/Images"
@@ -48,16 +50,22 @@ dataset = FlickrDataset(
     images_dir=image_root
 )
 
-collator = FlickrCollator(processor)
+w2v = KeyedVectors.load_word2vec_format(
+    "./word2vec/GoogleNews-vectors-negative300.bin",
+    binary=True  # 二进制格式
+)
+
+collator = FlickrCollator(processor, w2v, 'cuda')
 
 dataloader = DataLoader(dataset, batch_size=2, collate_fn=collator.collate)
 
 for batch in dataloader:
     output = model(**batch)
-    image_embeds = output.image_embeds
-    text_embeds = output.text_embeds
-    print(image_embeds.shape)
-    print(text_embeds.shape)
+    print(output)
+    # image_embeds = output.image_embeds
+    # text_embeds = output.text_embeds
+    # print(image_embeds.shape)
+    # print(text_embeds.shape)
     break
 
 # output = model(**inputs)
