@@ -24,29 +24,6 @@ from torch.utils.data.dataloader import DataLoader
 # print(f"正例比例: {pos_ratio:.4f}")
 # print(f"负例比例: {neg_ratio:.4f}")
 
-from transformers import BertModel, BertTokenizerFast
-from data.VUA18.VUA18_Dataset import VUA18_Collator_Embed, VUA18_Dataset
-from tqdm import trange
-from gensim.models import KeyedVectors
-import torch
-
-w2v = KeyedVectors.load_word2vec_format("./word2vec/GoogleNews-vectors-negative300.bin", binary=True)
-
-tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')
-
-collator = VUA18_Collator_Embed(tokenizer, w2v)
-
-data = VUA18_Dataset(
-    file_path="./data/VUA18/dev.tsv",
-    tokenizer=tokenizer
-)
-
-dataloader = DataLoader(data, batch_size=2, collate_fn=collator.collate)
-
-for batch in dataloader:
-    print(batch["input_ids"].shape)
-    print(batch["embeds"].shape)
-    break
 
 # data = VUA18_Dataset_Embedded(
 #     file_path="./data/VUA18/dev.tsv",
@@ -54,3 +31,46 @@ for batch in dataloader:
 #     device='cuda',
 #     model=model
 # )
+
+from data_processing.flickr.flickr import FlickrDataset, FlickrCollator
+import torchvision.transforms as T
+from transformers import CLIPProcessor, CLIPModel
+from torch.utils.data.dataloader import DataLoader
+
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+image_root ="./data/flickr8k/Images"
+ann_file = "./data/flickr8k/captions.csv"
+
+dataset = FlickrDataset(
+    csv_path=ann_file,
+    images_dir=image_root
+)
+
+collator = FlickrCollator(processor)
+
+dataloader = DataLoader(dataset, batch_size=2, collate_fn=collator.collate)
+
+for batch in dataloader:
+    output = model(**batch)
+    image_embeds = output.image_embeds
+    text_embeds = output.text_embeds
+    print(image_embeds.shape)
+    print(text_embeds.shape)
+    break
+
+# output = model(**inputs)
+
+# image_embeds = output.image_embeds
+# text_embeds = output.text_embeds
+
+# print(image_embeds.shape)
+# print(text_embeds.shape)
+
+# print(type(img), img.shape)
+
+# print(type(captions), captions)
+
+# print(type(img), img.shape)
+# print(len(captions), captions[0])
