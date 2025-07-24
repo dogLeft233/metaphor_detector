@@ -1,6 +1,7 @@
 from transformers import CLIPModel
 from torch import nn
 from model.loss_fn.cca_loss import cca_loss
+import torch.nn.functional as F
 import torch
 
 class CLIPEncoder(nn.Module):
@@ -16,7 +17,8 @@ class CLIPEncoder(nn.Module):
             nn.Linear(self.clip_output_dim, 400),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(400, self.mlp_output_dim)
+            nn.Linear(400, self.mlp_output_dim),
+            nn.LayerNorm(self.mlp_output_dim)
         )
         
     def forward(self, input_ids:torch.Tensor, attention_mask:torch.Tensor, pixel_values:torch.Tensor, sentence_embeds:torch.Tensor)->torch.Tensor:
@@ -24,7 +26,7 @@ class CLIPEncoder(nn.Module):
         outputs = self.clip(input_ids=input_ids, attention_mask=attention_mask, pixel_values=pixel_values)
         
         # 处理image_embeds
-        image_embeds = outputs.image_embeds.unsqueeze(1)  # (B, 1, 512)
+        image_embeds = outputs.image_embeds
         text_embeds = outputs.text_embeds
         sentence_embeds = sentence_embeds
         
@@ -32,11 +34,13 @@ class CLIPEncoder(nn.Module):
         image_embeds = self.mlp(image_embeds)
         text_embeds = self.mlp(text_embeds)
         
-        image_embeds_expand = image_embeds.expand((-1, 5, -1)).reshape(-1, self.mlp_output_dim)
+        w2v_img_embeds = sentence_embeds.view(batch_size, 5, -1).mean(dim = 1, keepdim = False)
+        text_img_embeds = text_embeds.view(batch_size, 5, -1).mean(dim = 1, keepdim = False)
         
-        image_loss = cca_loss(image_embeds_expand, sentence_embeds)
-        text_loss = cca_loss(text_embeds, sentence_embeds)
+        image_loss = (1 - F.cosine_similarity(image_embeds, w2v_img_embeds, dim=-1)).mean(dim=-1)
+        text_loss = (1 - F.cosine_similarity(text_embeds, sentence_embeds, dim=-1)).mean(dim=-1)
+        alignment_loss = (1 - F.cosine_similarity(image_embeds, text_img_embeds, dim=-1)).mean(dim=-1)
         
-        loss = image_loss + text_loss
+        loss = image_loss + text_loss + 0.5 * alignment_loss
         
         return loss
