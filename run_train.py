@@ -1,48 +1,49 @@
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.adam import Adam
-from model.TransformerClassifier import TransformerClassifier
-from model.BertW2V import BertW2V
-from data_processing.VUA18.VUA18_Dataset import VUA18_Dataset, VUA18_Collator_Embed
+from torch.optim.adamw import AdamW
+from model.CLIPW2V import GPTClassifier, Meteor
+from data_processing.MultiMET.MultiMETDatasetTF import EmbeddedDataset, EmbeddedCollator
 from train_eval.Trainer import Trainer
-from transformers import get_scheduler
-from transformers import BertTokenizer
-import torch
-from transformers import BertModel, BertTokenizerFast
-from gensim.models import KeyedVectors
+from train_eval.Evaler import Evaler
 from utils.setting import set_random_seed
-from model.BertClassifier import BertClassifier
+import torch
 
 def main():
     set_random_seed(42)
     
-    w2v = KeyedVectors.load_word2vec_format("./word2vec/GoogleNews-vectors-negative300.bin", binary=True)
-    
-    batch_size = 16
+    batch_size = 128
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
-
-    train_dataset = VUA18_Dataset("./data/VUA18/train.tsv",tokenizer=tokenizer)
-    valid_dataset = VUA18_Dataset("./data/VUA18/dev.tsv",tokenizer=tokenizer)
-    collator = VUA18_Collator_Embed(tokenizer, w2v, device=device)
+    train_dataset = EmbeddedDataset("./data/archive/new_train.csv")
+    valid_dataset = EmbeddedDataset("./data/archive/new_val.csv")
+    collator = EmbeddedCollator(device)
     
-    model = BertW2V()
+    model = GPTClassifier(dropout=0.2)
     
-    for p in model.bert.parameters():
-        p.requires_grad = False
-    
-    num_epoch = 20
+    num_epoch = 200
     
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collator.collate)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, collate_fn=collator.collate)
     
-    optimizer = Adam(model.parameters(), lr=1e-4)
+    prompt_lr = 5e-6
+    base_lr = 1e-4
     
-    # lr_schedule = get_scheduler(
-    #     name="linear", optimizer=optimizer, num_warmup_steps=0,
-    #     num_training_steps=num_epoch * len(train_dataloader)
-    # )
-    lr_schedule = None
+    prompt_params    = {"params": model.prompt_embedding,"lr": prompt_lr}
+    other_params     = {
+        "params": [
+            p for n, p in model.named_parameters()
+            if n != "prompt_embedding" and p.requires_grad
+        ],
+        "lr": base_lr
+    }
+
+    optimizer = AdamW([ prompt_params, other_params ])
+    
+    # optimizer = AdamW(model.parameters(), lr=1e-4)
+    
+    num_schedule_cycle = 6
+    lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epoch//num_schedule_cycle, eta_min=5e-6)
 
     trainer = Trainer(
         num_epoch=num_epoch,
@@ -50,14 +51,21 @@ def main():
         optimizer=optimizer,
         device=device,
         train_dataloader=train_dataloader,
-        valid_dataloader=DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, collate_fn=collator.collate),
+        valid_dataloader=valid_dataloader,
         lr_scheduler=lr_schedule,
-        patience=100000000,
-        eps=1e-2,
+        patience=20,
+        eps=1e-3,
         save_dir="./train_log"
     )
     
     trainer.train()
+    
+    test_dataset = EmbeddedDataset("./data/archive/new_test.csv")
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collator.collate)
+    
+    evaler = Evaler(model=model, dataloader=test_dataloader, device=device)
+    
+    evaler.evaluate()
 
 if __name__ == "__main__":
     main()

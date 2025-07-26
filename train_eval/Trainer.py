@@ -54,9 +54,6 @@ class Trainer:
                 loss.backward()
                 self.optimizer.step()
                 
-                if self.lr_scheduler != None:
-                    self.lr_scheduler.step()
-                
                 t_pbar.set_description(f"step-{step} t_loss-{loss.item():.4f}")
                 loss_sum += loss.item()
                 
@@ -66,6 +63,9 @@ class Trainer:
                 #         total_norm += p.grad.data.norm(2).item()**2
                 #     total_norm = total_norm**0.5
                 # print(f"Step {step}: grad_norm={total_norm:.4f}")
+                
+        if self.lr_scheduler != None:
+            self.lr_scheduler.step()
                 
         avg_loss = loss_sum / len(self.train_dataloader)
         self.epoch_train_loss.append(avg_loss)
@@ -112,7 +112,8 @@ class Trainer:
                 if accumulated_patience >= self.patience:
                     tqdm.write("触发早停，训练停止")
                     break
-                
+        
+        print(f"训练结束，最佳验证集损失：{self.best_loss:.4f}")
         self._save_and_plot()
                 
     def _create_experiment_dir(self) -> Path:
