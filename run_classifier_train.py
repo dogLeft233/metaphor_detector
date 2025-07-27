@@ -7,8 +7,7 @@ from utils.setting import set_random_seed
 import torch
 import logging
 from data_processing.metaphor_dataset import EmbeddedDataset, EmbeddedCollator
-from train_eval.trainer import Trainer
-from train_eval.evaler import Evaler
+from train_eval.trainer import TrainerBinary
 from utils.logger_handler import TqdmLoggingHandler
 
 
@@ -71,7 +70,7 @@ def main():
     optimizer = AdamW([prompt_params, lora_params, other_params])
     lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epoch//args.num_schedule_cycle, eta_min=5e-6)
 
-    trainer = Trainer(
+    trainer = TrainerBinary(
         num_epoch=args.num_epoch,
         model=model,
         optimizer=optimizer,

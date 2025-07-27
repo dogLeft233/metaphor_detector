@@ -20,8 +20,8 @@ model.eval()
 
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
 
-tsv_path = 'data/MultiMET/Facebook_pic_solved.tsv'
-df = pd.read_csv(tsv_path, sep='\t', encoding="utf-8")
+csv_path = "./data/archive/avg_train_label_E.csv"
+df = pd.read_csv(csv_path, sep='\t', encoding="utf-8")
 
 img_dir = "./data/MultiMET/Facebook_pic_solved"
 
