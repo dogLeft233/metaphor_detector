@@ -39,6 +39,28 @@ from torch.utils.data.dataloader import DataLoader
 # from torch.utils.data.dataloader import DataLoader
 # from gensim.models import KeyedVectors
 
+# from transformers import CLIPProcessor, CLIPModel
+
+# model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+# processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+
+from data_processing.flickr.flickr import EmbeddingsDataset, EmbeddingsCollator
+from model.CLIPW2V import W2VDisambiguator
+
+dataset = EmbeddingsDataset("./data/flickr30k/dev.csv")
+collator = EmbeddingsCollator("cuda")
+
+model = W2VDisambiguator().to("cuda")
+dataloader = DataLoader(dataset, batch_size=2, collate_fn=collator.collate)
+
+for batch in dataloader:
+    print(batch["image_embeds"].shape)
+    print(batch["text_embeds"].shape)
+    print(batch["labels"].shape)
+    output = model(**batch)
+    print(output)
+    break
+
 # model = CLIPEncoder().to('cuda')
 # processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
@@ -84,21 +106,21 @@ from torch.utils.data.dataloader import DataLoader
 # print(len(captions), captions[0])
 
 
-from model.CLIPW2V import GPTClassifier
+# from model.CLIPW2V import GPTClassifier
 
-model = GPTClassifier().to("cuda")
-from data_processing.MultiMET.MultiMETDatasetTF import EmbeddedCollator, EmbeddedDataset
-from torch.utils.data.dataloader import DataLoader
+# model = GPTClassifier().to("cuda")
+# from data_processing.MultiMET.MultiMETDatasetTF import EmbeddedCollator, EmbeddedDataset
+# from torch.utils.data.dataloader import DataLoader
 
-dataset = EmbeddedDataset("./data/MultiMET/train.tsv")
+# dataset = EmbeddedDataset("./data/MultiMET/train.tsv")
 
-collator = EmbeddedCollator("cuda")
+# collator = EmbeddedCollator("cuda")
 
-dataloader = DataLoader(dataset, batch_size=2, collate_fn=collator.collate)
+# dataloader = DataLoader(dataset, batch_size=2, collate_fn=collator.collate)
 
-for batch in dataloader:
-    print(model(**batch))
-    break
+# for batch in dataloader:
+#     print(model(**batch))
+#     break
 
 # item = torch.tensor(np.fromstring(df["text_embeds"].iloc[0], dtype=np.float32))
 # item_2 = torch.tensor(np.fromstring(df["image_embeds"].iloc[0], dtype=np.float32))

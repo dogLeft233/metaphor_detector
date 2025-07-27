@@ -1,20 +1,23 @@
 import os
 import pandas as pd
-from model.CLIPW2V import CLIPEncoder
+from model.CLIPW2V import W2VDisambiguator
 import torch
 import numpy as np
 from PIL import Image
-from transformers import CLIPProcessor
+from transformers import CLIPProcessor, CLIPModel
 from tqdm import tqdm
 
 # 设备
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-model = CLIPEncoder().to(device)
-model.load_state_dict(torch.load("./train_log/exp_2025-07-24_18-10-17/model.pth", map_location=device))
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+clip_model.eval()
+
+model = W2VDisambiguator()
+model.load_state_dict(torch.load("./train_log/exp_2025-07-26_18-10-17/model.pth", map_location=device))
 model.eval()
 
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
 
 # 读取TSV
 tsv_path = 'data/MultiMET/Facebook_pic_solved.tsv'

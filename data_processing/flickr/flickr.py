@@ -10,6 +10,7 @@ import torch
 import numpy as np
 import string
 import re
+from tqdm.auto import tqdm
 
 class FlickrDataset(Dataset):
     
@@ -80,3 +81,36 @@ class FlickrCollator:
         
         inputs["sentence_embeds"] = sentence_embeds
         return inputs
+    
+class EmbeddingsDataset(Dataset):
+    def __init__(self, csv_path)->None:
+        super().__init__()
+        self.data = pd.read_csv(csv_path)
+        tqdm.pandas(desc="处理数据中...", ncols=80, leave=False)
+        
+        self.data["image_embeds"] = self.data["image_embeds"].progress_apply(eval)
+        self.data["text_embeds"] = self.data["text_embeds"].progress_apply(eval)
+        self.data["labels"] = self.data["labels"].progress_apply(eval)
+        
+        print(f"成功读取{len(self.data)}条数据")
+        
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx:int)->Dict[str,torch.Tensor]:
+        return self.data.iloc[idx]
+    
+class EmbeddingsCollator:
+    def __init__(self, device = "cpu"):
+        self.device = device
+        
+    def collate(self, batch):
+        image_embeds = torch.stack([torch.tensor(item["image_embeds"], dtype=torch.float, device=self.device) for item in batch], dim=0)
+        text_embeds = torch.stack([torch.tensor(item["text_embeds"], dtype=torch.float, device=self.device) for item in batch], dim=0)
+        labels = torch.stack([torch.tensor(item["labels"], dtype=torch.float, device=self.device) for item in batch], dim=0)
+        
+        return {
+            "image_embeds":image_embeds,
+            "text_embeds":text_embeds,
+            "labels":labels
+        }

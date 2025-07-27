@@ -3,10 +3,12 @@ from torch.optim.optimizer import Optimizer
 from torch.utils.data.dataloader import DataLoader
 import matplotlib.pyplot as plt
 from tqdm import tqdm, trange
+from sklearn.metrics import accuracy_score, f1_score
 from copy import deepcopy
 from pathlib import Path
 import datetime
 import torch
+import torch.nn.functional as F
 
 class Trainer:
     def __init__(self,
@@ -17,9 +19,11 @@ class Trainer:
                  train_dataloader:DataLoader,
                  valid_dataloader:DataLoader,
                  save_dir,
+                 exp_dir = None,
                  lr_scheduler = None,
                  patience:int = 1e9,
-                 eps:float = 1e-2
+                 eps:float = 1e-2,
+                 log_fn = print
                 ):
         
         self.num_epoch = num_epoch
@@ -32,6 +36,8 @@ class Trainer:
         self.valid_dataloader = valid_dataloader
         
         self.base_save_dir = Path(save_dir)
+        self._exp_dir = exp_dir
+        
         self.epoch_train_loss = []
         self.epoch_valid_loss = []
         
@@ -39,6 +45,13 @@ class Trainer:
         self.eps = eps
         self.best_loss = 1e9
         self.best_model = deepcopy(model).cpu()
+        self.log_fn = log_fn
+        
+    @property
+    def exp_dir(self):
+        if self._exp_dir == None:
+            self._exp_dir =self._create_experiment_dir()
+        return self._exp_dir
         
     def _train_epoch(self):
         self.model.train()
@@ -77,18 +90,32 @@ class Trainer:
         
         loss_sum = 0
         
+        all_preds = []
+        all_labels = []
+        
         with torch.no_grad():
             with tqdm(enumerate(self.valid_dataloader), total=len(self.valid_dataloader), leave=False, ncols=80) as v_pbar:
                 for step, batch in v_pbar:
-                    loss = self.model(**batch)
+                    labels = batch['labels']
+                    batch_inputs = {k: v for k, v in batch.items() if k != 'labels'}
+                    
+                    logits = self.model(**batch_inputs)
+                    
+                    loss = F.cross_entropy(logits, labels)
                     
                     v_pbar.set_description(f"step-{step} v_loss-{loss.item():.4f}")
                     loss_sum += loss.item()
-                    
+                    preds = torch.argmax(logits, dim=-1)
+                    all_preds.extend(preds.cpu().numpy().tolist())
+                    all_labels.extend(labels.cpu().numpy().tolist())
+        
+        acc = accuracy_score(all_labels, all_preds)
+        f1 = f1_score(all_labels, all_preds)
+        tqdm.write(f"acc: {acc:.4f} f1: {f1:.4f}")
         avg_loss = loss_sum / len(self.valid_dataloader)
         self.epoch_valid_loss.append(avg_loss)
         
-        return avg_loss
+        return 1 - f1
         
     def train(self):
         
@@ -110,10 +137,10 @@ class Trainer:
                     accumulated_patience += 1
                     
                 if accumulated_patience >= self.patience:
-                    tqdm.write("触发早停，训练停止")
+                    self.log_fn("early stopping !!!")
                     break
         
-        print(f"训练结束，最佳验证集损失：{self.best_loss:.4f}")
+        self.log_fn(f"best valid f1：{1- self.best_loss:.4f}")
         self._save_and_plot()
                 
     def _create_experiment_dir(self) -> Path:
@@ -124,8 +151,8 @@ class Trainer:
         return experiment_dir
                 
     def _save_and_plot(self):
-        save_dir = self._create_experiment_dir()
-        print(f"结果将保存到{save_dir}")
+            
+        print(f"结果将保存到{self.exp_dir}")
         plt.figure()
         plt.plot(range(len(self.epoch_train_loss)), self.epoch_train_loss, label="Train Loss")
         plt.plot(range(len(self.epoch_valid_loss)), self.epoch_valid_loss, label="Valid Loss")
@@ -133,8 +160,7 @@ class Trainer:
         plt.ylabel("loss")
         plt.title("epoch-loss")
         plt.legend()
-        plt.savefig(save_dir / "epoch-loss.png")
-        plt.show()
+        plt.savefig(self.exp_dir / "epoch-loss.png")
         
-        torch.save(self.best_model.state_dict(),save_dir / "model.pth")
+        torch.save(self.best_model.state_dict(),self.exp_dir / "model.pth")
                 
