@@ -19,6 +19,7 @@ class Trainer:
                  train_dataloader:DataLoader,
                  valid_dataloader:DataLoader,
                  save_dir,
+                 test_dataloader:DataLoader = None,
                  exp_dir = None,
                  lr_scheduler = None,
                  patience:int = 1e9,
@@ -34,6 +35,7 @@ class Trainer:
         
         self.train_dataloader = train_dataloader
         self.valid_dataloader = valid_dataloader
+        self.test_dataloader = test_dataloader
         
         self.base_save_dir = Path(save_dir)
         self._exp_dir = exp_dir
@@ -43,8 +45,10 @@ class Trainer:
         
         self.patience = patience
         self.eps = eps
-        self.best_loss = 1e9
+        self.best_f1 = -1e9
+        self.best_epoch = -1
         self.best_model = deepcopy(model).cpu()
+        
         self.log_fn = log_fn
         
     @property
@@ -70,13 +74,6 @@ class Trainer:
                 t_pbar.set_description(f"step-{step} t_loss-{loss.item():.4f}")
                 loss_sum += loss.item()
                 
-                # total_norm = 0
-                # for p in self.model.parameters():
-                #     if p.grad is not None:
-                #         total_norm += p.grad.data.norm(2).item()**2
-                #     total_norm = total_norm**0.5
-                # print(f"Step {step}: grad_norm={total_norm:.4f}")
-                
         if self.lr_scheduler != None:
             self.lr_scheduler.step()
                 
@@ -85,7 +82,7 @@ class Trainer:
         
         return avg_loss
         
-    def _valid_epoch(self):
+    def _valid_epoch(self, epoch:int):
         self.model.eval()
         
         loss_sum = 0
@@ -110,12 +107,51 @@ class Trainer:
                     all_labels.extend(labels.cpu().numpy().tolist())
         
         acc = accuracy_score(all_labels, all_preds)
-        f1 = f1_score(all_labels, all_preds)
-        tqdm.write(f"acc: {acc:.4f} f1: {f1:.4f}")
+        f1_pos = f1_score(all_labels, all_preds, pos_label=1)
+        f1_neg = f1_score(all_labels, all_preds, pos_label=0)
+        
+        pos_count = sum(1 for label in all_labels if label == 1)
+        neg_count = sum(1 for label in all_labels if label == 0)
+        total_count = len(all_labels)
+        
+        f1_avg = (f1_pos * pos_count + f1_neg * neg_count) / total_count
+        self.log_fn(f"Valid-epoch: {epoch} acc: {acc:.4f} f1_pos: {f1_pos:.4f} f1_neg: {f1_neg:.4f} f1_avg: {f1_avg:.4f} (pos:{pos_count}, neg:{neg_count})")
+        
         avg_loss = loss_sum / len(self.valid_dataloader)
         self.epoch_valid_loss.append(avg_loss)
         
-        return 1 - f1
+        return f1_avg
+    
+    def _test_epoch(self, epoch:int):
+        self.model.eval()
+        
+        all_preds = []
+        all_labels = []
+        
+        with torch.no_grad():
+            with tqdm(enumerate(self.test_dataloader), total=len(self.test_dataloader), leave=False, ncols=80) as v_pbar:
+                for step, batch in v_pbar:
+                    labels = batch['labels']
+                    batch_inputs = {k: v for k, v in batch.items() if k != 'labels'}
+                    
+                    logits = self.model(**batch_inputs)
+
+                    preds = torch.argmax(logits, dim=-1)
+                    all_preds.extend(preds.cpu().numpy().tolist())
+                    all_labels.extend(labels.cpu().numpy().tolist())
+        
+        acc = accuracy_score(all_labels, all_preds)
+        f1_pos = f1_score(all_labels, all_preds, pos_label=1)
+        f1_neg = f1_score(all_labels, all_preds, pos_label=0)
+        
+        pos_count = sum(1 for label in all_labels if label == 1)
+        neg_count = sum(1 for label in all_labels if label == 0)
+        total_count = len(all_labels)
+        
+        f1_avg = (f1_pos * pos_count + f1_neg * neg_count) / total_count
+        self.log_fn(f"Test-epoch: {epoch} acc: {acc:.4f} f1_pos: {f1_pos:.4f} f1_neg: {f1_neg:.4f} f1_avg: {f1_avg:.4f} (pos:{pos_count}, neg:{neg_count})")
+        
+        return f1_avg
         
     def train(self):
         
@@ -124,14 +160,19 @@ class Trainer:
         with trange(self.num_epoch, ncols=80) as pbar:
             for epoch in pbar:
                 t_loss = self._train_epoch()
+                v_f1 = self._valid_epoch(epoch)
                 
-                v_loss = self._valid_epoch()
+                if self.test_dataloader != None:
+                    self._test_epoch(epoch)
                 
-                pbar.set_description(f"epoch-{epoch} t_loss-{t_loss:.4f} v_loss-{v_loss:.4f}")
+                pbar.set_description(f"epoch-{epoch} t_loss-{t_loss:.4f} v_f1-{v_f1:.4f}")
                 
-                if self.best_loss - v_loss >= self.eps:
+                self.log_fn(f"===========================================================")
+                
+                if  v_f1 - self.best_f1 >= self.eps:
                     accumulated_patience = 0
-                    self.best_loss = v_loss
+                    self.best_f1 = v_f1
+                    self.best_epoch = epoch
                     self.best_model.load_state_dict(self.model.state_dict())
                 else:
                     accumulated_patience += 1
@@ -140,7 +181,7 @@ class Trainer:
                     self.log_fn("early stopping !!!")
                     break
         
-        self.log_fn(f"best valid f1：{1- self.best_loss:.4f}")
+        self.log_fn(f"best valid f1：{self.best_f1:.4f} best epoch : {self.best_epoch}")
         self._save_and_plot()
                 
     def _create_experiment_dir(self) -> Path:
@@ -152,7 +193,8 @@ class Trainer:
                 
     def _save_and_plot(self):
             
-        print(f"结果将保存到{self.exp_dir}")
+        self.log_fn(f"结果将保存到{self.exp_dir}")
+        
         plt.figure()
         plt.plot(range(len(self.epoch_train_loss)), self.epoch_train_loss, label="Train Loss")
         plt.plot(range(len(self.epoch_valid_loss)), self.epoch_valid_loss, label="Valid Loss")

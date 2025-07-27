@@ -1,29 +1,28 @@
 import os
 import pandas as pd
-from model.CLIPW2V import W2VDisambiguator
+from model.clip_w2v_gpt import W2VDisambiguator
 import torch
 import numpy as np
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 from tqdm import tqdm
 
-# 设备
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
 clip_model.eval()
 
 model = W2VDisambiguator()
+
+#使用训练得到的偏移器
 model.load_state_dict(torch.load("./train_log/exp_2025-07-26_18-10-17/model.pth", map_location=device))
 model.eval()
 
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
 
-# 读取TSV
 tsv_path = 'data/MultiMET/Facebook_pic_solved.tsv'
 df = pd.read_csv(tsv_path, sep='\t', encoding="utf-8")
 
-# # 假设图片文件夹路径
 img_dir = "./data/MultiMET/Facebook_pic_solved"
 
 print(f"图片地址{img_dir}")
@@ -50,14 +49,11 @@ with torch.no_grad():
             v_flat = v.view(-1).cpu().tolist()
             results_dict[k].append(v_flat)
 
-# 将每个编码的展平向量作为一列
 new_features = {}
 for k, arrs in results_dict.items():
-    new_features[k] = arrs  # 每行为一个np.ndarray
+    new_features[k] = arrs
 new_features_df = pd.DataFrame(new_features)
 
-# 合并到原df
-# 注意：如果需要保存为字符串，可用.apply(lambda x: ','.join(map(str, x)))
 df = pd.concat([df, new_features_df], axis=1)
 
 path = "./data/MultiMET/embedded_Facebook_pic_solved.tsv"

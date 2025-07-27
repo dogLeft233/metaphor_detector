@@ -1,9 +1,9 @@
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.adam import Adam
 from torch.optim.adamw import AdamW
-from model.CLIPW2V import GPTClassifier, Meteor
-from data_processing.MultiMET.MultiMETDatasetTF import EmbeddedDataset, EmbeddedCollator
-from train_eval.Evaler import Evaler
+from model.clip_w2v_gpt import GPTClassifier, Meteor
+from data_processing.metaphor_dataset import EmbeddedDataset, EmbeddedCollator
+from train_eval.evaler import Evaler
 from utils.setting import set_random_seed
 import torch
 

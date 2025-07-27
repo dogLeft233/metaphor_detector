@@ -1,8 +1,8 @@
 from torch.utils.data.dataloader import DataLoader
 from torch.optim import AdamW
-from data_processing.flickr.flickr import EmbeddingsDataset, EmbeddingsCollator
-from train_eval.Trainer import Trainer
-from model.CLIPW2V import W2VDisambiguator
+from data_processing.flickr_dataset import EmbeddingsDataset, EmbeddingsCollator
+from train_eval.trainer import Trainer
+from model.clip_w2v_gpt import W2VDisambiguator
 import torch
 from gensim.models import KeyedVectors
 from utils.setting import set_random_seed

@@ -44,8 +44,8 @@ from torch.utils.data.dataloader import DataLoader
 # model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
 # processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
 
-from data_processing.flickr.flickr import EmbeddingsDataset, EmbeddingsCollator
-from model.CLIPW2V import W2VDisambiguator
+from data_processing.flickr_dataset import EmbeddingsDataset, EmbeddingsCollator
+from model.clip_w2v_gpt import W2VDisambiguator
 
 dataset = EmbeddingsDataset("./data/flickr30k/dev.csv")
 collator = EmbeddingsCollator("cuda")
