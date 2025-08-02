@@ -24,6 +24,8 @@ from typing import List
 import torch
 from PIL import Image
 from peft import LoraConfig, get_peft_model
+from typing import Dict
+from model.module import FFNResidualBlock, AttentionPool, LayerFusion
 
 def detect_metaphor(clip: CLIPModel, clip_processor: CLIPProcessor, disambiguator: nn.Module, 
                    classifier: nn.Module, texts: List[str], image: Image) -> torch.Tensor:
@@ -284,7 +286,7 @@ class GPT2LoRAClassifier(nn.Module):
         
         # 分类头
         self.classifier = nn.Sequential(
-            nn.Linear(self.gpt2.config.n_embd, self.gpt2.config.n_embd),
+            nn.Linear(3 * self.gpt2.config.n_embd, self.gpt2.config.n_embd),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(self.gpt2.config.n_embd, num_classes),
@@ -351,6 +353,7 @@ class GPT2LoRAClassifier(nn.Module):
 
         # 添加软提示
         prompt = self.prompt_embedding.unsqueeze(0).expand(B, -1, -1)
+        
         inputs_embeds = torch.cat([prompt, feature], dim=1)
         inputs_embeds = self.dropout(inputs_embeds)
 
@@ -358,11 +361,394 @@ class GPT2LoRAClassifier(nn.Module):
         outputs = self.gpt2(inputs_embeds=inputs_embeds)
         hidden = outputs.hidden_states[-1]  # (B, seq_len, D)
         
-        # 取最后一个token的隐藏状态
-        h = hidden[:, -1, :]
+        h =torch.cat([hidden[:,-3,:],hidden[:,-2,:],hidden[:, -1, :]], dim=-1)
 
         # 分类
         logits = self.classifier(h)
+        
+        if labels is not None:
+            return F.cross_entropy(logits, labels)
+        return logits
+    
+class ContrastiveEmbedding(nn.Module):
+    def __init__(self,dropout:float = 0.2, context_dim:int = 768, solo_dim:int = 300, hidden_dim:int = 768, outout_dim : int = 768, margin:float = 0.5) -> None:
+        super().__init__()
+        
+        self.dropout = nn.Dropout(dropout)
+        
+        self.context_proj = nn.Sequential(
+            nn.LayerNorm(context_dim * 2),
+            nn.Linear(context_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            FFNResidualBlock(hidden_dim),
+            nn.Dropout(dropout),
+            FFNResidualBlock(hidden_dim),
+            nn.Linear(hidden_dim, outout_dim)
+        )
+        
+        self.solo_proj = nn.Sequential(
+            nn.LayerNorm(solo_dim * 2),
+            nn.Linear(solo_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, outout_dim)
+        )
+        
+        self.margin = margin
+        
+    def encode(self,
+               text_embeds: torch.Tensor,
+               image_embeds: torch.Tensor,
+               shifted_image_embeds: torch.Tensor,
+               shifted_text_embeds: torch.Tensor,
+               **kwargs
+            )->Dict[str, torch.Tensor]:
+        context_input = torch.cat([text_embeds, image_embeds], dim=-1)
+        context_input = self.dropout(context_input)
+        context_feature = self.context_proj(context_input)
+        
+        solo_input = torch.cat([shifted_image_embeds, shifted_text_embeds], dim=-1)
+        solo_input = self.dropout(solo_input)
+        solo_feature = self.solo_proj(solo_input)
+        
+        distance = 1 - F.cosine_similarity(context_feature, solo_feature, dim=-1)
+        
+        return{
+            "context_feature":context_feature,
+            "solo_feature":solo_feature,
+            "distance":distance   
+        }
+        
+    def _calculate_loss(self, distances:torch.Tensor, labels:torch.Tensor)->torch.Tensor:
+        pos_loss = labels * torch.clamp(self.margin - distances, min=0) ** 2
+        neg_loss = (1 - labels) * distances ** 2
+        return (pos_loss + neg_loss).mean()
+        
+    def forward(
+            self,
+            text_embeds: torch.Tensor,
+            image_embeds: torch.Tensor,
+            shifted_image_embeds: torch.Tensor,
+            shifted_text_embeds: torch.Tensor,
+            labels: torch.Tensor = None,
+        ):
+        output = self.encode(
+            text_embeds=text_embeds,
+            image_embeds=image_embeds,
+            shifted_text_embeds=shifted_text_embeds,
+            shifted_image_embeds=shifted_image_embeds
+        )
+        
+        if labels != None:
+            # Contrastive Loss
+            distance = output["distance"]
+            return self._calculate_loss(distances=distance, labels=labels)
+        return output
+    
+class Contrastivegpt(nn.Module):
+    def __init__(self,dropout:float = 0.2, margin:float = 0.5, lora_r:int = 4, lora_alpha:int = 16, clip_dim:int = 768, w2v_dim:int = 300) -> None:
+        super().__init__()
+        self.margin = margin
+        
+        config = GPT2Config.from_pretrained("gpt2", output_hidden_states=True)
+        base_model = GPT2LMHeadModel.from_pretrained("gpt2", config=config)
+        
+        for p in base_model.parameters():
+            p.requires_grad = False
+
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            target_modules=["c_attn"],
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        self.gpt2 = get_peft_model(base_model, lora_config)
+        
+        self.clip_proj = nn.Linear(clip_dim, self.gpt2.config.n_embd)
+        self.w2v_proj = nn.Linear(w2v_dim, self.gpt2.config.n_embd)
+        
+        self.prompt_embedding = nn.Parameter(
+            self.get_init_prompt_embedding()
+        )
+        
+        self.context_pool = AttentionPool(self.gpt2.config.n_embd)
+        self.solo_pool = AttentionPool(self.gpt2.config.n_embd)
+        
+        self.dropout = nn.Dropout(dropout)
+        
+    def encode(self,
+            text_embeds: torch.Tensor,
+            image_embeds: torch.Tensor,
+            shifted_image_embeds: torch.Tensor,
+            shifted_text_embeds: torch.Tensor,
+            **kwargs
+        )->Dict[str, torch.Tensor]:
+        B = text_embeds.size(0)
+        
+        text_embeds = self.clip_proj(text_embeds).unsqueeze(1)
+        image_embeds = self.clip_proj(image_embeds).unsqueeze(1)
+        
+        shifted_image_embeds = self.w2v_proj(shifted_image_embeds).unsqueeze(1)
+        shifted_text_embeds = self.w2v_proj(shifted_text_embeds).unsqueeze(1)
+        
+        prompt = self.prompt_embedding.unsqueeze(0).expand(B, -1, -1)
+        
+        gpt_input = torch.cat([prompt, text_embeds, image_embeds, shifted_text_embeds, shifted_image_embeds], dim=1)
+        gpt_input = self.dropout(gpt_input)
+        
+        outputs = self.gpt2(inputs_embeds=gpt_input)
+        hidden = outputs.hidden_states[-1]
+        hidden = self.dropout(hidden)
+        
+        context_feature = self.context_pool(hidden)
+        solo_feature = self.solo_pool(hidden)
+        
+        distance = 1 - F.cosine_similarity(context_feature, solo_feature, dim=-1)
+        
+        return{
+            "context_feature":context_feature,
+            "solo_feature":solo_feature,
+            "distance":distance   
+        }
+        
+    @torch.no_grad()
+    def get_init_prompt_embedding(self) -> torch.Tensor:
+        """
+        获取初始化的软提示嵌入
+        
+        使用预定义的提示文本初始化软提示嵌入，这些提示用于引导模型关注
+        特定的语义方面（情感、意图、冒犯性、隐喻）。
+        
+        Returns:
+            torch.Tensor: 初始化的软提示嵌入
+        """
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        wte = self.gpt2.get_input_embeddings().weight
+
+        # 预定义的提示文本
+        prompts = "Compare context and isolated semantics:"
+        ids = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(prompts))
+        emb = wte[torch.tensor(ids, dtype=torch.long, device=wte.device)]
+            
+        return emb
+    
+    def _calculate_loss(self, distances:torch.Tensor, labels:torch.Tensor)->torch.Tensor:
+        pos_loss = labels * torch.clamp(self.margin - distances, min=0) ** 2
+        neg_loss = (1 - labels) * distances ** 2
+        return (pos_loss + neg_loss).mean()
+        
+    def forward(
+            self,
+            text_embeds: torch.Tensor,
+            image_embeds: torch.Tensor,
+            shifted_image_embeds: torch.Tensor,
+            shifted_text_embeds: torch.Tensor,
+            labels: torch.Tensor = None,
+        ):
+        output = self.encode(
+            text_embeds=text_embeds,
+            image_embeds=image_embeds,
+            shifted_text_embeds=shifted_text_embeds,
+            shifted_image_embeds=shifted_image_embeds
+        )
+        
+        if labels != None:
+            # Contrastive Loss
+            distance = output["distance"]
+            return self._calculate_loss(distances=distance, labels=labels)
+        return output
+    
+class GPT2LoRAContrastiveClassifier(nn.Module):
+    """
+    基于GPT2和LoRA的分类器
+    
+    该模块使用GPT2作为骨干网络，通过LoRA进行高效微调，
+    结合CLIP编码和Word2Vec消歧结果进行最终的隐喻分类。
+    
+    主要特点：
+    - 使用LoRA进行参数高效微调
+    - 软提示（Soft Prompt）技术
+    - 多模态特征融合
+    """
+    
+    def __init__(
+        self,
+        alpha:float = 0.5,
+        dropout: float = 0.1,
+        num_classes: int = 2,
+        img_feature_dim: int = 768,
+        w2v_dim: int = 300,
+        prompt_len: int = 10,
+        lora_r: int = 4,
+        lora_alpha: int = 16,
+    ):
+        """
+        初始化GPT2分类器
+        
+        Args:
+            dropout (float): Dropout率，默认为0.1
+            num_classes (int): 分类类别数，默认为2（二分类）
+            img_feature_dim (int): 图像特征维度，默认为768
+            w2v_dim (int): Word2Vec维度，默认为300
+            prompt_len (int): 软提示长度，默认为10
+            lora_r (int): LoRA的秩，默认为4
+            lora_alpha (int): LoRA的缩放因子，默认为16
+        """
+        super().__init__()
+        self.alpha = alpha
+        self.prompt_len = prompt_len
+        
+        self.dropout = nn.Dropout(dropout)
+        
+        # 加载预训练的GPT2模型
+        config = GPT2Config.from_pretrained("gpt2", output_hidden_states=True)
+        base_model = GPT2LMHeadModel.from_pretrained("gpt2", config=config)
+        
+        # 冻结基础模型参数
+        for p in base_model.parameters():
+            p.requires_grad = False
+
+        # 配置LoRA
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            target_modules=["c_attn"],
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        self.gpt2 = get_peft_model(base_model, lora_config)
+        
+        self.contrastive_encoder = ContrastiveEmbedding(dropout=dropout, outout_dim= self.gpt2.config.n_embd)
+        
+        self.proj = nn.Linear(2 * self.gpt2.config.n_embd, self.gpt2.config.n_embd)
+        
+        self.clip_proj = nn.Linear(img_feature_dim, self.gpt2.config.n_embd)
+        
+        # 初始化软提示嵌入
+        self.prompt_embedding = nn.Parameter(
+            self.get_init_prompt_embedding()
+        )
+        
+        self.post_ffn = nn.Sequential(
+            nn.Linear(3 * self.gpt2.config.n_embd, self.gpt2.config.n_embd),
+            nn.ReLU(),
+            nn.Linear(self.gpt2.config.n_embd, 1)
+        )
+        
+        self.classifier = nn.Linear(2, num_classes)
+        
+    @torch.no_grad()
+    def get_init_prompt_embedding(self) -> torch.Tensor:
+        """
+        获取初始化的软提示嵌入
+        
+        使用预定义的提示文本初始化软提示嵌入，这些提示用于引导模型关注
+        特定的语义方面（情感、意图、冒犯性、隐喻）。
+        
+        Returns:
+            torch.Tensor: 初始化的软提示嵌入
+        """
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        wte = self.gpt2.get_input_embeddings().weight
+
+        # 预定义的提示文本
+        prompts = "Sentiment? Intention? Offensiveness? Metaphor?"
+        ids = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(prompts))
+        emb = wte[torch.tensor(ids, dtype=torch.long, device=wte.device)]
+            
+        return emb
+    
+    def _calculate_loss(self, logits:torch.Tensor, distances:torch.Tensor, labels:torch.Tensor)->torch.Tensor:
+        pos_weight = torch.tensor([1.0, 3.0], device=logits.device)
+        
+        classify_loss = F.cross_entropy(logits, labels, weight=pos_weight)
+        contrast_loss = self.contrastive_encoder._calculate_loss(distances=distances, labels=labels)
+        return classify_loss + self.alpha * contrast_loss
+    
+    def forward(self,
+                text_embeds: torch.Tensor,
+                image_embeds: torch.Tensor,
+                shifted_image_embeds: torch.Tensor,
+                shifted_text_embeds: torch.Tensor,
+                labels: torch.Tensor = None
+            ):
+        B = text_embeds.size(0)
+        
+        contrast_encode = self.contrastive_encoder.encode(
+            text_embeds=text_embeds,
+            image_embeds=image_embeds,
+            shifted_image_embeds=shifted_image_embeds,
+            shifted_text_embeds=shifted_text_embeds
+        )
+        
+        contrast_feature = torch.cat([contrast_encode["context_feature"], contrast_encode["solo_feature"]], dim=-1)
+        
+        contrast_feature = self.proj(contrast_feature).unsqueeze(1)
+        text_embeds = self.clip_proj(text_embeds).unsqueeze(1)
+        image_embeds = self.clip_proj(image_embeds).unsqueeze(1)
+        
+        prompt = self.prompt_embedding.unsqueeze(0).expand(B, -1, -1)
+        
+        feature = torch.cat([
+            prompt,
+            text_embeds,
+            image_embeds,
+            contrast_feature
+        ], dim=1)
+        feature = self.dropout(feature)
+        
+        outputs = self.gpt2(inputs_embeds=feature)
+        hidden = outputs.hidden_states[-1]
+        h =torch.cat([hidden[:,-3,:], hidden[:,-2,:], hidden[:, -1, :]], dim=-1)
+        h = self.dropout(h)
+        
+        h = self.post_ffn(h)
+        logits = self.classifier(torch.cat([h, contrast_encode["distance"].view(B, -1)], dim=-1))
+        
+        if labels is not None:
+            return self._calculate_loss(logits=logits, distances=contrast_encode["distance"], labels=labels)
+        return logits
+    
+class MLPclassifier(nn.Module):
+    def __init__(self,dropout:float = 0.2, input_dim:int = 768, hidden_dim:int = 768, num_classes:int =2):
+        super().__init__()
+        
+        encoder = Contrastivegpt(lora_r=2, lora_alpha=4)
+        encoder.load_state_dict(torch.load("./checkpoint/exp_2025-08-02_15-32-20/model.pth"))
+        encoder.to('cuda' if torch.cuda.is_available() else 'cpu')
+        encoder.eval()
+        
+        object.__setattr__(self, 'encoder', encoder)
+        
+        self.dropout = nn.Dropout(dropout)
+        
+        self.ffn = nn.Sequential(
+            nn.Linear(2 * input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            FFNResidualBlock(hidden_dim),
+            FFNResidualBlock(hidden_dim),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        self.classifier = nn.Linear(2, num_classes)
+        
+    def forward(self,
+                text_embeds: torch.Tensor,
+                image_embeds: torch.Tensor,
+                shifted_image_embeds: torch.Tensor,
+                shifted_text_embeds: torch.Tensor,
+                labels: torch.Tensor = None):
+        
+        feature = self.encoder.encode(text_embeds, image_embeds, shifted_image_embeds, shifted_text_embeds)
+        
+        distance = feature["distance"].unsqueeze(1)
+        feature = torch.cat([feature["context_feature"], feature["solo_feature"]], dim=-1)
+        feature = self.dropout(feature)
+        feature = self.ffn(feature)
+        feature = torch.cat([feature, distance], dim=-1)
+        logits = self.classifier(feature)
         
         if labels is not None:
             return F.cross_entropy(logits, labels)

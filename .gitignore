@@ -1,4 +1,6 @@
+data/
 word2vec/
+checkpoint/
 train_log/
 **/MultiMET/
 **/__pycache__/

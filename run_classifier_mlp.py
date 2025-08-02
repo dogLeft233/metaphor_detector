@@ -2,7 +2,7 @@ import argparse
 import sys
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.adamw import AdamW
-from model.clip_w2v_gpt import GPT2LoRAClassifier, GPT2LoRAContrastiveClassifier
+from model.clip_w2v_gpt import MLPclassifier
 from utils.setting import set_random_seed
 import torch
 import logging
@@ -15,7 +15,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='训练脚本')
     parser.add_argument('--batch_size', type=int, default=128, help='批次大小')
     parser.add_argument('--num_epoch', type=int, default=200, help='训练轮数')
-    parser.add_argument('--lr', type=float, default=5e-4, help='学习率')
+    parser.add_argument('--lr', type=float, default=1e-4, help='学习率')
     parser.add_argument('--patience', type=int, default=6, help='早停耐心值')
     parser.add_argument('--eps', type=float, default=1e-3, help='早停阈值')
     parser.add_argument('--num_schedule_cycle', type=int, default=6, help='学习率调度周期')
@@ -37,43 +37,14 @@ def main():
     test_dataset = EmbeddedDataset(args.test_data)
     collator = EmbeddedCollator(device)
     
-    # model = GPT2LoRAClassifier(dropout=0.3, img_feature_dim=768, lora_r=2, lora_alpha=4)
-    model = GPT2LoRAContrastiveClassifier(alpha=0.0, dropout=0.3, img_feature_dim=768, lora_r=2, lora_alpha=4)
-    model.contrastive_encoder.load_state_dict(torch.load("./checkpoint/exp_2025-08-01_16-41-39/model.pth"))
-    
-    for p in model.contrastive_encoder.parameters():
-        p.requires_grad = False
+    model = MLPclassifier()
     
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collator.collate)
     valid_dataloader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator.collate)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator.collate)
     
-    # 为不同参数组设置不同学习率
-    prompt_lr = args.lr * 0.1
-    lora_lr = args.lr * 0.5
-    base_lr = args.lr 
-    
-    # 分离不同类型的参数
-    prompt_params = {"params": model.prompt_embedding, "lr": prompt_lr}
-    
-    lora_params = {
-        "params": [
-            p for n, p in model.named_parameters()
-            if "lora" in n.lower() and p.requires_grad
-        ],
-        "lr": lora_lr
-    }
-    
-    other_params = {
-        "params": [
-            p for n, p in model.named_parameters()
-            if n != "prompt_embedding" and "lora" not in n.lower() and p.requires_grad
-        ],
-        "lr": base_lr
-    }
-    
-    optimizer = AdamW([prompt_params, lora_params, other_params])
-    lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epoch//args.num_schedule_cycle, eta_min=5e-6)
+    optimizer = AdamW(model.parameters(), lr=args.lr)
+    lr_schedule = None
 
     trainer = TrainerBinary(
         num_epoch=args.num_epoch,

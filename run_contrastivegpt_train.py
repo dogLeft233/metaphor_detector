@@ -2,12 +2,12 @@ import argparse
 import sys
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.adamw import AdamW
-from model.clip_w2v_gpt import GPT2LoRAClassifier, GPT2LoRAContrastiveClassifier
+from model.clip_w2v_gpt import GPT2LoRAClassifier, GPT2LoRAContrastiveClassifier, Contrastivegpt
 from utils.setting import set_random_seed
 import torch
 import logging
 from data_processing.metaphor_dataset import EmbeddedDataset, EmbeddedCollator
-from train_eval.trainer import TrainerBinary
+from train_eval.trainer import TrainerBinary, Trainer
 from utils.logger_handler import TqdmLoggingHandler
 
 
@@ -16,9 +16,9 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=128, help='批次大小')
     parser.add_argument('--num_epoch', type=int, default=200, help='训练轮数')
     parser.add_argument('--lr', type=float, default=5e-4, help='学习率')
-    parser.add_argument('--patience', type=int, default=6, help='早停耐心值')
+    parser.add_argument('--patience', type=int, default=10, help='早停耐心值')
     parser.add_argument('--eps', type=float, default=1e-3, help='早停阈值')
-    parser.add_argument('--num_schedule_cycle', type=int, default=6, help='学习率调度周期')
+    parser.add_argument('--num_schedule_cycle', type=int, default=10, help='学习率调度周期')
     parser.add_argument('--train_data', type=str, default="./data/archive/avg_train.csv", help='训练数据路径')
     parser.add_argument('--val_data', type=str, default="./data/archive/avg_val.csv", help='验证数据路径')
     parser.add_argument('--test_data', type=str, default="./data/archive/avg_test.csv", help='测试数据路径')
@@ -34,19 +34,12 @@ def main():
 
     train_dataset = EmbeddedDataset(args.train_data)
     valid_dataset = EmbeddedDataset(args.val_data)
-    test_dataset = EmbeddedDataset(args.test_data)
     collator = EmbeddedCollator(device)
     
-    # model = GPT2LoRAClassifier(dropout=0.3, img_feature_dim=768, lora_r=2, lora_alpha=4)
-    model = GPT2LoRAContrastiveClassifier(alpha=0.0, dropout=0.3, img_feature_dim=768, lora_r=2, lora_alpha=4)
-    model.contrastive_encoder.load_state_dict(torch.load("./checkpoint/exp_2025-08-01_16-41-39/model.pth"))
-    
-    for p in model.contrastive_encoder.parameters():
-        p.requires_grad = False
+    model = Contrastivegpt(dropout=0.3, margin=1.0, lora_r=2, lora_alpha=4, clip_dim=768, w2v_dim=300)
     
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collator.collate)
     valid_dataloader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator.collate)
-    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator.collate)
     
     # 为不同参数组设置不同学习率
     prompt_lr = args.lr * 0.1
@@ -75,7 +68,7 @@ def main():
     optimizer = AdamW([prompt_params, lora_params, other_params])
     lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epoch//args.num_schedule_cycle, eta_min=5e-6)
 
-    trainer = TrainerBinary(
+    trainer = Trainer(
         num_epoch=args.num_epoch,
         model=model,
         optimizer=optimizer,
@@ -85,25 +78,8 @@ def main():
         lr_scheduler=lr_schedule,
         patience=args.patience,
         eps=args.eps,
-        test_dataloader=test_dataloader,
         save_dir=args.save_dir,
-        log_fn=logging.info
     )
-    
-    # 设置日志文件，保存在实验目录下
-    exp_dir = trainer.exp_dir
-    log_path = exp_dir / "train.log"
-    logging.basicConfig(
-        filename=log_path,
-        filemode='w',
-        format='%(asctime)s %(levelname)s: %(message)s',
-        level=logging.INFO
-    )
-    
-    console = TqdmLoggingHandler()
-    console.setLevel(logging.INFO)
-    logging.getLogger().addHandler(console)
-    logging.info(f"parameters: {vars(args)}")
     
     trainer.train()
 
