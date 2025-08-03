@@ -12,7 +12,7 @@ import pandas as pd
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 contrastiveEncoder = Contrastivegpt(lora_r=2, lora_alpha=4).to(device)
-contrastiveEncoder.load_state_dict(torch.load("./train_log/exp_2025-08-02_15-32-20/model.pth"))
+contrastiveEncoder.load_state_dict(torch.load("./checkpoint/exp_2025-08-02_15-32-20/model.pth"))
 contrastiveEncoder.eval()
 
 dataset = EmbeddedDataset("./data/archive/avg_test.csv")
@@ -154,8 +154,7 @@ print(f"  重叠度: {overlap_rate:.4f} ({overlap_rate*100:.1f}%)")
 
 print(f"\n图形已保存为: ./distance_distribution.png")
 
-print("\n正在保存distance小于1.0的正例样本...")
-low_distance_positive = [sample for sample in positive_samples_info if sample['distance'] < 1.0]
+low_distance_positive = [sample for sample in positive_samples_info if sample['distance']]
 
 if low_distance_positive:
     # 按distance升序排列
@@ -168,13 +167,10 @@ if low_distance_positive:
     output_file = './low_distance_positive_samples.csv'
     df_low_distance.to_csv(output_file, index=False, encoding='utf-8')
     
-    print(f"找到 {len(low_distance_positive)} 个distance小于1.0的正例样本")
     print(f"已保存到: {output_file}")
     print(f"Distance范围: [{df_low_distance['distance'].min():.4f}, {df_low_distance['distance'].max():.4f}]")
     
     # 显示前10个样本
     print("\n前10个样本:")
     print(df_low_distance[['file_name', 'distance']].head(10).to_string(index=False))
-else:
-    print("没有找到distance小于1.0的正例样本")
     
