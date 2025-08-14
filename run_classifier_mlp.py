@@ -1,12 +1,11 @@
 import argparse
-import sys
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.adamw import AdamW
-from model.clip_w2v_gpt import MLPclassifier
+from model.metaphor_detector import MLPclassifier, MLPclassifier2
 from utils.setting import set_random_seed
 import torch
 import logging
-from data_processing.metaphor_dataset import EmbeddedDataset, EmbeddedCollator
+from data_processing.metaphor_dataset import MIPEmbeddingDataset, MIPEmbeddingCollator
 from train_eval.trainer import TrainerBinary
 from utils.logger_handler import TqdmLoggingHandler
 
@@ -16,6 +15,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=128, help='批次大小')
     parser.add_argument('--num_epoch', type=int, default=200, help='训练轮数')
     parser.add_argument('--lr', type=float, default=1e-4, help='学习率')
+    parser.add_argument('--encoder_lr', type=float, default=5e-6, help='encoder学习率')
     parser.add_argument('--patience', type=int, default=6, help='早停耐心值')
     parser.add_argument('--eps', type=float, default=1e-3, help='早停阈值')
     parser.add_argument('--num_schedule_cycle', type=int, default=6, help='学习率调度周期')
@@ -32,18 +32,39 @@ def main():
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    train_dataset = EmbeddedDataset(args.train_data)
-    valid_dataset = EmbeddedDataset(args.val_data)
-    test_dataset = EmbeddedDataset(args.test_data)
-    collator = EmbeddedCollator(device)
+    train_dataset = MIPEmbeddingDataset(args.train_data)
+    valid_dataset = MIPEmbeddingDataset(args.val_data)
+    test_dataset = MIPEmbeddingDataset(args.test_data)
+    collator = MIPEmbeddingCollator(device)
     
-    model = MLPclassifier()
+    model = MLPclassifier(dropout=0.3)
+    
+    model.encoder.load_state_dict(torch.load("./checkpoint/exp_2025-08-14_14-50-19/model.pth"))
     
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collator.collate)
     valid_dataloader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator.collate)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator.collate)
     
-    optimizer = AdamW(model.parameters(), lr=args.lr)
+    # # 将参数分为两个参数组，设置不同的学习率
+    # encoder_params = list(model.encoder.parameters())
+    # other_params = []
+    
+    # # 获取所有参数，排除encoder参数
+    # encoder_param_set = set(encoder_params)
+    # for param in model.parameters():
+    #     if param not in encoder_param_set:
+    #         other_params.append(param)
+    
+    for p in model.encoder.parameters():
+        p.requires_grad = False
+    
+    # optimizer = AdamW([
+    #     {'params': encoder_params, 'lr': args.encoder_lr, 'name': 'encoder'},
+    #     {'params': other_params, 'lr': args.lr, 'name': 'other'}
+    # ])
+    
+    optimizer = AdamW(model.parameters(), lr= args.lr)
+    
     lr_schedule = None
 
     trainer = TrainerBinary(
@@ -75,6 +96,8 @@ def main():
     console.setLevel(logging.INFO)
     logging.getLogger().addHandler(console)
     logging.info(f"parameters: {vars(args)}")
+    logging.info(f"encoder学习率: {args.encoder_lr}")
+    logging.info(f"其他参数学习率: {args.lr}")
     
     trainer.train()
 

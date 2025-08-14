@@ -2,9 +2,8 @@ from torch.utils.data.dataloader import DataLoader
 from torch.optim import AdamW
 from data_processing.flickr_dataset import EmbeddingsDataset, EmbeddingsCollator
 from train_eval.trainer import Trainer
-from model.clip_w2v_gpt import W2VDisambiguator
 import torch
-from gensim.models import KeyedVectors
+from model.metaphor_detector import W2VDisambiguator
 from utils.setting import set_random_seed
 
 def main():
@@ -14,11 +13,11 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    train_dataset = EmbeddingsDataset("./data/splits/processed_flickr30k__train.csv")
-    valid_dataset = EmbeddingsDataset("./data/splits/processed_flickr30k__val.csv")
+    train_dataset = EmbeddingsDataset("./data/splits/processed_flickr30k_train.csv")
+    valid_dataset = EmbeddingsDataset("./data/splits/processed_flickr30k_val.csv")
     collator = EmbeddingsCollator(device=device)
     
-    model = W2VDisambiguator(dropout=0.2)
+    model = W2VDisambiguator(dropout=0.3, hidden_dim=768)
     
     num_epoch = 200
     

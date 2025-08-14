@@ -82,7 +82,7 @@ class FlickrCollator:
         inputs["sentence_embeds"] = sentence_embeds
         return inputs
     
-class EmbeddingsDataset(Dataset):
+class CLIPEmbeddingDataset(Dataset):
     def __init__(self, csv_path)->None:
         super().__init__()
         self.data = pd.read_csv(csv_path)
@@ -100,7 +100,7 @@ class EmbeddingsDataset(Dataset):
     def __getitem__(self, idx:int)->Dict[str,torch.Tensor]:
         return self.data.iloc[idx]
     
-class EmbeddingsCollator:
+class CLIPEmbeddingCollator:
     def __init__(self, device = "cpu"):
         self.device = device
         

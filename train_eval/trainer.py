@@ -9,6 +9,8 @@ from torch import nn
 import datetime
 import torch
 import torch.nn.functional as F
+from typing import Dict
+
 class Trainer:
     def __init__(self,
                  num_epoch:int,
@@ -33,6 +35,7 @@ class Trainer:
         self.valid_dataloader = valid_dataloader
         
         self.base_save_dir = Path(save_dir)
+        self._exp_dir = None
         self.epoch_train_loss = []
         self.epoch_valid_loss = []
         
@@ -40,6 +43,12 @@ class Trainer:
         self.eps = eps
         self.best_loss = 1e9
         self.best_model = deepcopy(model).cpu()
+        
+    @property
+    def exp_dir(self)->Path:
+        if self._exp_dir == None:
+            self._exp_dir =self._create_experiment_dir()
+        return self._exp_dir
         
     def _train_epoch(self):
         self.model.train()
@@ -117,8 +126,7 @@ class Trainer:
         return experiment_dir
                 
     def _save_and_plot(self):
-        save_dir = self._create_experiment_dir()
-        print(f"结果将保存到{save_dir}")
+        print(f"结果将保存到{self.exp_dir}")
         plt.figure()
         plt.plot(range(len(self.epoch_train_loss)), self.epoch_train_loss, label="Train Loss")
         plt.plot(range(len(self.epoch_valid_loss)), self.epoch_valid_loss, label="Valid Loss")
@@ -126,10 +134,10 @@ class Trainer:
         plt.ylabel("loss")
         plt.title("epoch-loss")
         plt.legend()
-        plt.savefig(save_dir / "epoch-loss.png")
-        plt.show()
+        plt.savefig(self.exp_dir / "epoch-loss.png")
+        # plt.show()
         
-        torch.save(self.best_model.state_dict(),save_dir / "model.pth")
+        torch.save(self.model.state_dict(),self.exp_dir / "model.pth")
 
 class TrainerBinary:
     def __init__(self,
@@ -157,7 +165,6 @@ class TrainerBinary:
         self.train_dataloader = train_dataloader
         self.valid_dataloader = valid_dataloader
         self.test_dataloader = test_dataloader
-        
         self.base_save_dir = Path(save_dir)
         self._exp_dir = exp_dir
         
@@ -173,7 +180,7 @@ class TrainerBinary:
         self.log_fn = log_fn
         
     @property
-    def exp_dir(self):
+    def exp_dir(self)->Path:
         if self._exp_dir == None:
             self._exp_dir =self._create_experiment_dir()
         return self._exp_dir
@@ -325,4 +332,5 @@ class TrainerBinary:
         plt.legend()
         plt.savefig(self.exp_dir / "epoch-loss.png")
         
-        torch.save(self.best_model.state_dict(),self.exp_dir / "model.pth")
+        # torch.save(self.best_model.state_dict(),self.exp_dir / "model.pth")
+        torch.save(self.model.state_dict(),self.exp_dir / "model.pth")

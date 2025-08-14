@@ -196,7 +196,7 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) == 1:
         # 默认处理flickr30k数据
-        csv_path = "./data/flickr30k/processed_flickr30k_.csv"
+        csv_path = "./data/flickr30k/processed_flickr30k.csv"
         if os.path.exists(csv_path):
             print("使用默认参数处理flickr30k数据...")
             split_dataset(csv_path, 0.8, 42, "./data/splits")
